@@ -8,16 +8,19 @@ OutputBaseFilename=SURA_v2.0.0_Setup
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
+SetupIconFile=D:\sura\app_icon.ico
+UninstallDisplayIcon={app}\app_icon.ico
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 Source: "D:\sura\dist\sura.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "D:\sura\app_icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\SURA"; Filename: "{app}\sura.exe"
-Name: "{autodesktop}\SURA"; Filename: "{app}\sura.exe"; Tasks: desktopicon
+Name: "{group}\SURA"; Filename: "{app}\sura.exe"; IconFilename: "{app}\app_icon.ico"
+Name: "{autodesktop}\SURA"; Filename: "{app}\sura.exe"; IconFilename: "{app}\app_icon.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\sura.exe"; Description: "{cm:LaunchProgram,SURA}"; Flags: nowait postinstall skipifsilent
