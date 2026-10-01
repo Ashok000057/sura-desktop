@@ -6,6 +6,7 @@ Modern Dark-Theme Desktop GUI built with CustomTkinter.
 Integrates:
 - Intelligent File Organization Engine (with dry-run and duplicate disambiguation)
 - Smart Bulk File Renamer (Pattern matching, prefix/suffix, numbering, live preview)
+- Live System Resource Monitor (Real-time CPU & RAM utilization)
 - BYOK API Key Manager (Groq llama-3.1-8b-instant & OpenAI gpt-4o-mini)
 - AI Developer Assistant (Code Summarization, Commit Messages, File Renamer, Security Audit)
 
@@ -23,6 +24,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple
+
+import psutil
 
 # ---------------------------------------------------------
 # Dynamic Import Resolution (Handles root, subfolder & PyInstaller paths)
@@ -87,8 +90,8 @@ class SuraDesktopApp(ctk.CTk):
 
         # Window Configuration
         self.title(f"{self.APP_TITLE} (v{self.VERSION})")
-        self.geometry("1120x720")
-        self.minsize(960, 600)
+        self.geometry("1120x740")
+        self.minsize(960, 620)
 
         # Set Sleek Dark Theme
         ctk.set_appearance_mode("Dark")
@@ -104,6 +107,7 @@ class SuraDesktopApp(ctk.CTk):
         self.show_api_key = False
         self.renamer_staged_files: List[Path] = []
         self.renamer_plan: List[Tuple[Path, str]] = []
+        self.monitor_running = True
 
         # Build Main UI Grid
         self.grid_columnconfigure(1, weight=1)
@@ -113,6 +117,13 @@ class SuraDesktopApp(ctk.CTk):
         self._build_content_views()
         self._select_tab("organizer")
         self._update_sidebar_status()
+        self._start_resource_monitor_thread()
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
+
+    def _on_close_window(self):
+        self.monitor_running = False
+        self.destroy()
 
     # -----------------------------------------------------
     # Sidebar Navigation UI
@@ -137,7 +148,7 @@ class SuraDesktopApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color="#94a3b8"
         )
-        self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 20))
+        self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 18))
 
         # Navigation Buttons
         self.nav_organizer_btn = ctk.CTkButton(
@@ -184,17 +195,44 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.nav_ai_btn.grid(row=5, column=0, padx=14, pady=4, sticky="ew")
 
-        # Bottom System Info in Sidebar
+        # Bottom System Info & Resource Monitor Card
         self.sidebar_bottom_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.sidebar_bottom_frame.grid(row=7, column=0, padx=14, pady=16, sticky="ew")
+        self.sidebar_bottom_frame.grid(row=7, column=0, padx=14, pady=(10, 16), sticky="ew")
 
+        # Live Hardware Monitor Widget
+        self.monitor_card = ctk.CTkFrame(self.sidebar_bottom_frame, fg_color="#161f30", corner_radius=8)
+        self.monitor_card.pack(fill="x", pady=(0, 12))
+
+        # CPU Metric
+        cpu_header = ctk.CTkFrame(self.monitor_card, fg_color="transparent")
+        cpu_header.pack(fill="x", padx=10, pady=(8, 2))
+        ctk.CTkLabel(cpu_header, text="CPU", font=ctk.CTkFont(size=11, weight="bold"), text_color="#cbd5e1").pack(side="left")
+        self.cpu_pct_lbl = ctk.CTkLabel(cpu_header, text="0%", font=ctk.CTkFont(family="Consolas", size=10), text_color="#38bdf8")
+        self.cpu_pct_lbl.pack(side="right")
+
+        self.cpu_progress = ctk.CTkProgressBar(self.monitor_card, height=6, progress_color="#38bdf8", fg_color="#0b101c")
+        self.cpu_progress.pack(fill="x", padx=10, pady=(0, 6))
+        self.cpu_progress.set(0.0)
+
+        # RAM Metric
+        ram_header = ctk.CTkFrame(self.monitor_card, fg_color="transparent")
+        ram_header.pack(fill="x", padx=10, pady=(0, 2))
+        ctk.CTkLabel(ram_header, text="RAM", font=ctk.CTkFont(size=11, weight="bold"), text_color="#cbd5e1").pack(side="left")
+        self.ram_pct_lbl = ctk.CTkLabel(ram_header, text="0%", font=ctk.CTkFont(family="Consolas", size=10), text_color="#10b981")
+        self.ram_pct_lbl.pack(side="right")
+
+        self.ram_progress = ctk.CTkProgressBar(self.monitor_card, height=6, progress_color="#10b981", fg_color="#0b101c")
+        self.ram_progress.pack(fill="x", padx=10, pady=(0, 8))
+        self.ram_progress.set(0.0)
+
+        # Status & Version badges
         self.key_status_badge = ctk.CTkLabel(
             self.sidebar_bottom_frame,
             text="● Key Unconfigured",
             font=ctk.CTkFont(family="Consolas", size=11),
             text_color="#f59e0b"
         )
-        self.key_status_badge.pack(anchor="w", pady=(0, 4))
+        self.key_status_badge.pack(anchor="w", pady=(0, 3))
 
         self.version_tag = ctk.CTkLabel(
             self.sidebar_bottom_frame,
@@ -203,6 +241,38 @@ class SuraDesktopApp(ctk.CTk):
             text_color="#64748b"
         )
         self.version_tag.pack(anchor="w")
+
+    def _start_resource_monitor_thread(self):
+        def monitor_worker():
+            # Initial probe
+            psutil.cpu_percent(interval=None)
+            while self.monitor_running:
+                try:
+                    cpu = psutil.cpu_percent(interval=1.5)
+                    ram = psutil.virtual_memory().percent
+                    if self.monitor_running:
+                        self.after(0, lambda c=cpu, r=ram: self._update_resource_ui(c, r))
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        threading.Thread(target=monitor_worker, daemon=True).start()
+
+    def _update_resource_ui(self, cpu: float, ram: float):
+        try:
+            self.cpu_pct_lbl.configure(text=f"{cpu:.0f}%")
+            self.cpu_progress.set(min(1.0, max(0.0, cpu / 100.0)))
+            self.cpu_progress.configure(
+                progress_color="#ef4444" if cpu > 85 else ("#f59e0b" if cpu > 60 else "#38bdf8")
+            )
+
+            self.ram_pct_lbl.configure(text=f"{ram:.0f}%")
+            self.ram_progress.set(min(1.0, max(0.0, ram / 100.0)))
+            self.ram_progress.configure(
+                progress_color="#ef4444" if ram > 85 else ("#f59e0b" if ram > 70 else "#10b981")
+            )
+        except Exception:
+            pass
 
     def _select_tab(self, tab_name: str):
         self.active_tab = tab_name
@@ -297,7 +367,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         desc.pack(anchor="w", pady=(2, 0))
 
-        # Path Selector
         path_box = ctk.CTkFrame(self.organizer_frame, fg_color="#161f30", corner_radius=10)
         path_box.grid(row=1, column=0, sticky="ew", pady=(0, 14), padx=2)
         path_box.grid_columnconfigure(1, weight=1)
@@ -332,7 +401,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         open_folder_btn.grid(row=0, column=3, padx=(4, 14), pady=12)
 
-        # Options & Controls
         controls_frame = ctk.CTkFrame(self.organizer_frame, fg_color="#161f30", corner_radius=10)
         controls_frame.grid(row=2, column=0, sticky="ew", pady=(0, 14), padx=2)
 
@@ -383,7 +451,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.clear_log_btn.pack(side="right")
 
-        # Auto-scrolling Log Console
         self.log_console = ctk.CTkTextbox(
             self.organizer_frame,
             font=ctk.CTkFont(family="Consolas", size=12),
@@ -537,13 +604,12 @@ class SuraDesktopApp(ctk.CTk):
         messagebox.showerror("Rollback Failed", error_message)
 
     # =====================================================
-    # TAB 2: Smart Bulk Renamer UI (NEW v2.1.0)
+    # TAB 2: Smart Bulk Renamer UI
     # =====================================================
     def _build_renamer_tab(self):
         self.renamer_frame.grid_columnconfigure(0, weight=1)
         self.renamer_frame.grid_rowconfigure(3, weight=1)
 
-        # Header
         header = ctk.CTkFrame(self.renamer_frame, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
@@ -558,7 +624,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         desc.pack(anchor="w", pady=(2, 0))
 
-        # Target Folder & Extension Filter
         dir_box = ctk.CTkFrame(self.renamer_frame, fg_color="#161f30", corner_radius=10)
         dir_box.grid(row=1, column=0, sticky="ew", pady=(0, 10), padx=2)
         dir_box.grid_columnconfigure(1, weight=1)
@@ -599,11 +664,9 @@ class SuraDesktopApp(ctk.CTk):
         )
         load_files_btn.grid(row=0, column=5, padx=(4, 14), pady=10)
 
-        # Transformation Controls Card
         rules_box = ctk.CTkFrame(self.renamer_frame, fg_color="#161f30", corner_radius=10)
         rules_box.grid(row=2, column=0, sticky="ew", pady=(0, 10), padx=2)
 
-        # Row 1: Prefix / Suffix
         r1 = ctk.CTkFrame(rules_box, fg_color="transparent")
         r1.pack(fill="x", padx=14, pady=(10, 6))
 
@@ -626,7 +689,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.case_menu.pack(side="right")
 
-        # Row 2: Find & Replace
         r2 = ctk.CTkFrame(rules_box, fg_color="transparent")
         r2.pack(fill="x", padx=14, pady=(0, 6))
 
@@ -643,7 +705,6 @@ class SuraDesktopApp(ctk.CTk):
         self.opt_use_regex = ctk.CTkCheckBox(r2, text="Regex", font=ctk.CTkFont(size=11), command=self._generate_renamer_preview)
         self.opt_use_regex.pack(side="left")
 
-        # Row 3: Auto-Numbering & Action Buttons
         r3 = ctk.CTkFrame(rules_box, fg_color="transparent")
         r3.pack(fill="x", padx=14, pady=(0, 10))
 
@@ -658,7 +719,7 @@ class SuraDesktopApp(ctk.CTk):
 
         self.execute_rename_btn = ctk.CTkButton(
             r3,
-            text="🏷️️ Execute Batch Rename",
+            text="🏷 Execute Batch Rename",
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="#10b981",
             hover_color="#059669",
@@ -678,7 +739,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.preview_btn.pack(side="right", padx=(0, 10))
 
-        # Preview Table Area
         self.renamer_table_box = ctk.CTkTextbox(
             self.renamer_frame,
             font=ctk.CTkFont(family="Consolas", size=12),
@@ -764,7 +824,6 @@ class SuraDesktopApp(ctk.CTk):
             stem = file_path.stem
             ext = file_path.suffix
 
-            # 1. Find & Replace
             if find_val:
                 try:
                     if use_regex:
@@ -774,7 +833,6 @@ class SuraDesktopApp(ctk.CTk):
                 except Exception:
                     pass
 
-            # 2. Case transformation
             if case_opt == "lowercase":
                 stem = stem.lower()
             elif case_opt == "UPPERCASE":
@@ -782,10 +840,7 @@ class SuraDesktopApp(ctk.CTk):
             elif case_opt == "Title Case":
                 stem = stem.title()
 
-            # 3. Numbering
             num_str = f"_{str(count).zfill(pad)}" if add_numbering else ""
-
-            # 4. Prefix & Suffix
             new_name = f"{prefix}{stem}{suffix}{num_str}{ext}"
             self.renamer_plan.append((file_path, new_name))
 
@@ -835,7 +890,6 @@ class SuraDesktopApp(ctk.CTk):
             except Exception as exc:
                 errors.append(f"Failed '{old_path.name}': {exc}")
 
-        # Rescan to refresh UI state
         self._scan_renamer_files()
 
         msg = f"Successfully renamed {renamed_count} files!"
@@ -882,7 +936,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.provider_hint.pack(anchor="w", padx=20, pady=(0, 14))
 
-        # Configurable & Auto-Discovered Model Selector
         model_sec_label = ctk.CTkLabel(card, text="AI Model Identifier (Auto-Discovered or Custom):", font=ctk.CTkFont(size=13, weight="bold"))
         model_sec_label.pack(anchor="w", padx=20, pady=(0, 6))
 
@@ -976,7 +1029,6 @@ class SuraDesktopApp(ctk.CTk):
         )
         self.key_validation_status_label.pack(side="left")
 
-        # Security & Architecture Card
         sec_card = ctk.CTkFrame(self.settings_frame, fg_color="#101726", corner_radius=12)
         sec_card.pack(fill="x", padx=2)
 
