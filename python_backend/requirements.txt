@@ -1,0 +1,4 @@
+requests>=2.31.0
+# Optional enhancement packages:
+# rich>=13.7.0          # For colorful terminal tables and progress spinners
+# cryptography>=42.0.0  # For enterprise-grade AES config file encryption

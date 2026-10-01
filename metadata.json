@@ -1,0 +1,6 @@
+{
+  "name": "DevPulse BYOK Desktop Engine & Productivity Suite",
+  "description": "Production-ready Python backend and developer desktop productivity tool with BYOK AI integration, config manager, and intelligent file organizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
