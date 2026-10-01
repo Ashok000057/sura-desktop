@@ -1,13 +1,13 @@
 [Setup]
 AppName=SURA Developer Productivity Suite
-AppVersion=2.0.0
+AppVersion=2.1.0
 DefaultDirName={autopf}\SURA
 DefaultGroupName=SURA
 OutputDir=D:\sura\installer_output
-OutputBaseFilename=SURA_v2.0.0_Setup
+OutputBaseFilename=SURA_v2.1.0_Setup
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 SetupIconFile=D:\sura\app_icon.ico
 UninstallDisplayIcon={app}\app_icon.ico
 
