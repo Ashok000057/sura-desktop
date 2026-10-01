@@ -5,6 +5,7 @@ SURA - Developer Desktop Productivity Suite
 Modern Dark-Theme Desktop GUI built with CustomTkinter.
 Integrates:
 - Intelligent File Organization Engine (with dry-run and duplicate disambiguation)
+- Smart Bulk File Renamer (Pattern matching, prefix/suffix, numbering, live preview)
 - BYOK API Key Manager (Groq llama-3.1-8b-instant & OpenAI gpt-4o-mini)
 - AI Developer Assistant (Code Summarization, Commit Messages, File Renamer, Security Audit)
 
@@ -14,13 +15,14 @@ Framework: CustomTkinter (Python 3.9+)
 
 from __future__ import annotations
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # ---------------------------------------------------------
 # Dynamic Import Resolution (Handles root, subfolder & PyInstaller paths)
@@ -37,7 +39,6 @@ BACKEND_DIR = CURRENT_DIR / "python_backend"
 if BACKEND_DIR.is_dir() and str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-# PyInstaller bundle resource path resolution helper
 def resource_path(relative_path: str) -> Path:
     """Get absolute path to resource, works for dev and for PyInstaller _MEIPASS."""
     if hasattr(sys, '_MEIPASS'):
@@ -79,15 +80,15 @@ class SuraDesktopApp(ctk.CTk):
     """
 
     APP_TITLE = "SURA - Developer Productivity Suite"
-    VERSION = "2.0.0"
+    VERSION = "2.1.0"
 
     def __init__(self):
         super().__init__()
 
         # Window Configuration
         self.title(f"{self.APP_TITLE} (v{self.VERSION})")
-        self.geometry("1080x700")
-        self.minsize(900, 580)
+        self.geometry("1120x720")
+        self.minsize(960, 600)
 
         # Set Sleek Dark Theme
         ctk.set_appearance_mode("Dark")
@@ -101,6 +102,8 @@ class SuraDesktopApp(ctk.CTk):
         self.active_tab = "organizer"
         self.is_processing = False
         self.show_api_key = False
+        self.renamer_staged_files: List[Path] = []
+        self.renamer_plan: List[Tuple[Path, str]] = []
 
         # Build Main UI Grid
         self.grid_columnconfigure(1, weight=1)
@@ -117,7 +120,7 @@ class SuraDesktopApp(ctk.CTk):
     def _build_sidebar(self):
         self.sidebar_frame = ctk.CTkFrame(self, width=220, corner_radius=0, fg_color="#0f1523")
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(5, weight=1)
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
 
         # Brand Title
         self.logo_label = ctk.CTkLabel(
@@ -134,7 +137,7 @@ class SuraDesktopApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color="#94a3b8"
         )
-        self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 24))
+        self.subtitle_label.grid(row=1, column=0, padx=20, pady=(0, 20))
 
         # Navigation Buttons
         self.nav_organizer_btn = ctk.CTkButton(
@@ -146,7 +149,18 @@ class SuraDesktopApp(ctk.CTk):
             corner_radius=8,
             command=lambda: self._select_tab("organizer")
         )
-        self.nav_organizer_btn.grid(row=2, column=0, padx=14, pady=5, sticky="ew")
+        self.nav_organizer_btn.grid(row=2, column=0, padx=14, pady=4, sticky="ew")
+
+        self.nav_renamer_btn = ctk.CTkButton(
+            self.sidebar_frame,
+            text="🏷️  Bulk Renamer",
+            anchor="w",
+            font=ctk.CTkFont(size=13),
+            height=40,
+            corner_radius=8,
+            command=lambda: self._select_tab("renamer")
+        )
+        self.nav_renamer_btn.grid(row=3, column=0, padx=14, pady=4, sticky="ew")
 
         self.nav_settings_btn = ctk.CTkButton(
             self.sidebar_frame,
@@ -157,7 +171,7 @@ class SuraDesktopApp(ctk.CTk):
             corner_radius=8,
             command=lambda: self._select_tab("settings")
         )
-        self.nav_settings_btn.grid(row=3, column=0, padx=14, pady=5, sticky="ew")
+        self.nav_settings_btn.grid(row=4, column=0, padx=14, pady=4, sticky="ew")
 
         self.nav_ai_btn = ctk.CTkButton(
             self.sidebar_frame,
@@ -168,11 +182,11 @@ class SuraDesktopApp(ctk.CTk):
             corner_radius=8,
             command=lambda: self._select_tab("ai")
         )
-        self.nav_ai_btn.grid(row=4, column=0, padx=14, pady=5, sticky="ew")
+        self.nav_ai_btn.grid(row=5, column=0, padx=14, pady=4, sticky="ew")
 
         # Bottom System Info in Sidebar
         self.sidebar_bottom_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
-        self.sidebar_bottom_frame.grid(row=6, column=0, padx=14, pady=16, sticky="ew")
+        self.sidebar_bottom_frame.grid(row=7, column=0, padx=14, pady=16, sticky="ew")
 
         self.key_status_badge = ctk.CTkLabel(
             self.sidebar_bottom_frame,
@@ -199,6 +213,10 @@ class SuraDesktopApp(ctk.CTk):
             fg_color=selected_color if tab_name == "organizer" else unselected_color,
             text_color="#ffffff" if tab_name == "organizer" else "#cbd5e1"
         )
+        self.nav_renamer_btn.configure(
+            fg_color=selected_color if tab_name == "renamer" else unselected_color,
+            text_color="#ffffff" if tab_name == "renamer" else "#cbd5e1"
+        )
         self.nav_settings_btn.configure(
             fg_color=selected_color if tab_name == "settings" else unselected_color,
             text_color="#ffffff" if tab_name == "settings" else "#cbd5e1"
@@ -209,11 +227,14 @@ class SuraDesktopApp(ctk.CTk):
         )
 
         self.organizer_frame.grid_remove()
+        self.renamer_frame.grid_remove()
         self.settings_frame.grid_remove()
         self.ai_frame.grid_remove()
 
         if tab_name == "organizer":
             self.organizer_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        elif tab_name == "renamer":
+            self.renamer_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
         elif tab_name == "settings":
             self.settings_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
             self._load_settings_into_ui()
@@ -240,6 +261,9 @@ class SuraDesktopApp(ctk.CTk):
     def _build_content_views(self):
         self.organizer_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._build_organizer_tab()
+
+        self.renamer_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._build_renamer_tab()
 
         self.settings_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._build_settings_tab()
@@ -405,7 +429,6 @@ class SuraDesktopApp(ctk.CTk):
         self.log_console.insert("end", f"[{timestamp}] {message}\n")
         self.log_console.see("end")
 
-    # Non-blocking Worker Threads with default-argument lambda captures
     def _start_organize_thread(self):
         if self.is_processing:
             return
@@ -427,10 +450,8 @@ class SuraDesktopApp(ctk.CTk):
             self._append_log(f"Starting organization on: {target_dir} (Dry-Run: {dry_run})")
             start_time = time.time()
             try:
-                # Clean signature call: organize(target_dir, dry_run)
                 result = self.organizer.organize(target_dir, dry_run=dry_run)
                 elapsed = round(time.time() - start_time, 2)
-                # Resolved Tkinter lambda scope bug using default argument captures
                 self.after(0, lambda r=result, el=elapsed, dr=dry_run: self._on_organize_complete(r, el, dr))
             except Exception as exc:
                 err_msg = str(exc)
@@ -490,9 +511,7 @@ class SuraDesktopApp(ctk.CTk):
 
         def worker():
             try:
-                # Clean signature call: revert_last_run(target_dir)
                 restored, errors = self.organizer.revert_last_run(target_dir)
-                # Resolved Tkinter lambda scope bug using default argument captures
                 self.after(0, lambda rc=restored, er=errors: self._on_revert_complete(rc, er))
             except Exception as exc:
                 err_msg = str(exc)
@@ -518,7 +537,314 @@ class SuraDesktopApp(ctk.CTk):
         messagebox.showerror("Rollback Failed", error_message)
 
     # =====================================================
-    # TAB 2: BYOK Settings UI
+    # TAB 2: Smart Bulk Renamer UI (NEW v2.1.0)
+    # =====================================================
+    def _build_renamer_tab(self):
+        self.renamer_frame.grid_columnconfigure(0, weight=1)
+        self.renamer_frame.grid_rowconfigure(3, weight=1)
+
+        # Header
+        header = ctk.CTkFrame(self.renamer_frame, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+
+        title = ctk.CTkLabel(header, text="Smart Bulk File Renamer", font=ctk.CTkFont(size=20, weight="bold"), text_color="#ffffff")
+        title.pack(anchor="w")
+
+        desc = ctk.CTkLabel(
+            header,
+            text="Batch rename files using prefix, suffix, text find/replace, and auto-numbering with live dry-run preview.",
+            font=ctk.CTkFont(size=12),
+            text_color="#94a3b8"
+        )
+        desc.pack(anchor="w", pady=(2, 0))
+
+        # Target Folder & Extension Filter
+        dir_box = ctk.CTkFrame(self.renamer_frame, fg_color="#161f30", corner_radius=10)
+        dir_box.grid(row=1, column=0, sticky="ew", pady=(0, 10), padx=2)
+        dir_box.grid_columnconfigure(1, weight=1)
+
+        dir_lbl = ctk.CTkLabel(dir_box, text="Folder:", font=ctk.CTkFont(size=12, weight="bold"))
+        dir_lbl.grid(row=0, column=0, padx=(14, 8), pady=10)
+
+        self.renamer_folder_entry = ctk.CTkEntry(dir_box, font=ctk.CTkFont(family="Consolas", size=12), height=34)
+        self.renamer_folder_entry.insert(0, str(Path.home() / "Downloads"))
+        self.renamer_folder_entry.grid(row=0, column=1, sticky="ew", padx=8, pady=10)
+
+        browse_btn = ctk.CTkButton(
+            dir_box,
+            text="Browse...",
+            width=85,
+            height=34,
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            command=self._browse_renamer_directory
+        )
+        browse_btn.grid(row=0, column=2, padx=4, pady=10)
+
+        filter_lbl = ctk.CTkLabel(dir_box, text="Filter:", font=ctk.CTkFont(size=12))
+        filter_lbl.grid(row=0, column=3, padx=(8, 4), pady=10)
+
+        self.renamer_ext_entry = ctk.CTkEntry(dir_box, width=75, height=34, placeholder_text="*.*", font=ctk.CTkFont(family="Consolas", size=12))
+        self.renamer_ext_entry.insert(0, "*.*")
+        self.renamer_ext_entry.grid(row=0, column=4, padx=4, pady=10)
+
+        load_files_btn = ctk.CTkButton(
+            dir_box,
+            text="🔄 Scan Files",
+            width=100,
+            height=34,
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self._scan_renamer_files
+        )
+        load_files_btn.grid(row=0, column=5, padx=(4, 14), pady=10)
+
+        # Transformation Controls Card
+        rules_box = ctk.CTkFrame(self.renamer_frame, fg_color="#161f30", corner_radius=10)
+        rules_box.grid(row=2, column=0, sticky="ew", pady=(0, 10), padx=2)
+
+        # Row 1: Prefix / Suffix
+        r1 = ctk.CTkFrame(rules_box, fg_color="transparent")
+        r1.pack(fill="x", padx=14, pady=(10, 6))
+
+        ctk.CTkLabel(r1, text="Prefix:", font=ctk.CTkFont(size=12, weight="bold"), width=50, anchor="w").pack(side="left")
+        self.prefix_entry = ctk.CTkEntry(r1, placeholder_text="e.g. DOC_", width=160, height=32)
+        self.prefix_entry.pack(side="left", padx=(0, 20))
+        self.prefix_entry.bind("<KeyRelease>", lambda e: self._generate_renamer_preview())
+
+        ctk.CTkLabel(r1, text="Suffix:", font=ctk.CTkFont(size=12, weight="bold"), width=50, anchor="w").pack(side="left")
+        self.suffix_entry = ctk.CTkEntry(r1, placeholder_text="e.g. _v2", width=160, height=32)
+        self.suffix_entry.pack(side="left", padx=(0, 20))
+        self.suffix_entry.bind("<KeyRelease>", lambda e: self._generate_renamer_preview())
+
+        self.case_menu = ctk.CTkOptionMenu(
+            r1,
+            values=["Original Case", "lowercase", "UPPERCASE", "Title Case"],
+            height=32,
+            width=140,
+            command=lambda v: self._generate_renamer_preview()
+        )
+        self.case_menu.pack(side="right")
+
+        # Row 2: Find & Replace
+        r2 = ctk.CTkFrame(rules_box, fg_color="transparent")
+        r2.pack(fill="x", padx=14, pady=(0, 6))
+
+        ctk.CTkLabel(r2, text="Find:", font=ctk.CTkFont(size=12, weight="bold"), width=50, anchor="w").pack(side="left")
+        self.find_entry = ctk.CTkEntry(r2, placeholder_text="text to match", width=160, height=32)
+        self.find_entry.pack(side="left", padx=(0, 20))
+        self.find_entry.bind("<KeyRelease>", lambda e: self._generate_renamer_preview())
+
+        ctk.CTkLabel(r2, text="Replace:", font=ctk.CTkFont(size=12, weight="bold"), width=50, anchor="w").pack(side="left")
+        self.replace_entry = ctk.CTkEntry(r2, placeholder_text="replacement text", width=160, height=32)
+        self.replace_entry.pack(side="left", padx=(0, 20))
+        self.replace_entry.bind("<KeyRelease>", lambda e: self._generate_renamer_preview())
+
+        self.opt_use_regex = ctk.CTkCheckBox(r2, text="Regex", font=ctk.CTkFont(size=11), command=self._generate_renamer_preview)
+        self.opt_use_regex.pack(side="left")
+
+        # Row 3: Auto-Numbering & Action Buttons
+        r3 = ctk.CTkFrame(rules_box, fg_color="transparent")
+        r3.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.opt_add_numbering = ctk.CTkCheckBox(r3, text="Auto Numbering:", font=ctk.CTkFont(size=12, weight="bold"), command=self._generate_renamer_preview)
+        self.opt_add_numbering.pack(side="left", padx=(0, 10))
+
+        self.numbering_padding_entry = ctk.CTkEntry(r3, width=45, height=30, font=ctk.CTkFont(family="Consolas", size=11))
+        self.numbering_padding_entry.insert(0, "2")
+        self.numbering_padding_entry.pack(side="left", padx=(0, 6))
+        self.numbering_padding_entry.bind("<KeyRelease>", lambda e: self._generate_renamer_preview())
+        ctk.CTkLabel(r3, text="digits (e.g. 01, 02)", font=ctk.CTkFont(size=11), text_color="#94a3b8").pack(side="left", padx=(0, 20))
+
+        self.execute_rename_btn = ctk.CTkButton(
+            r3,
+            text="🏷️️ Execute Batch Rename",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#10b981",
+            hover_color="#059669",
+            height=34,
+            command=self._execute_batch_rename
+        )
+        self.execute_rename_btn.pack(side="right")
+
+        self.preview_btn = ctk.CTkButton(
+            r3,
+            text="👁️ Refresh Preview",
+            font=ctk.CTkFont(size=12),
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            height=34,
+            command=self._generate_renamer_preview
+        )
+        self.preview_btn.pack(side="right", padx=(0, 10))
+
+        # Preview Table Area
+        self.renamer_table_box = ctk.CTkTextbox(
+            self.renamer_frame,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color="#0b101c",
+            text_color="#e2e8f0",
+            corner_radius=10,
+            wrap="none"
+        )
+        self.renamer_table_box.grid(row=3, column=0, sticky="nsew", padx=2)
+
+        self._show_renamer_welcome_hint()
+
+    def _show_renamer_welcome_hint(self):
+        self.renamer_table_box.delete("1.0", "end")
+        hint = (
+            "========================================================================================================\n"
+            " SURA Smart Bulk Renamer — Dry-Run Preview Table\n"
+            "========================================================================================================\n\n"
+            " 1. Select a folder and click '🔄 Scan Files'.\n"
+            " 2. Configure your prefix, suffix, replace rules, or auto-numbering above.\n"
+            " 3. The live preview below updates automatically to show: Original Name -> Target Name.\n"
+            " 4. Click '🏷️ Execute Batch Rename' when you are satisfied with the preview.\n"
+        )
+        self.renamer_table_box.insert("1.0", hint)
+
+    def _browse_renamer_directory(self):
+        folder = filedialog.askdirectory(initialdir=self.renamer_folder_entry.get() or str(Path.home()))
+        if folder:
+            self.renamer_folder_entry.delete(0, "end")
+            self.renamer_folder_entry.insert(0, str(Path(folder).resolve()))
+            self._scan_renamer_files()
+
+    def _scan_renamer_files(self):
+        target_dir = self.renamer_folder_entry.get().strip()
+        if not target_dir or not Path(target_dir).is_dir():
+            messagebox.showwarning("Directory Error", "Please provide a valid directory.")
+            return
+
+        ext_filter = self.renamer_ext_entry.get().strip().lower()
+        folder_path = Path(target_dir)
+
+        try:
+            entries = [f for f in folder_path.iterdir() if f.is_file() and not f.name.startswith(".")]
+            if ext_filter and ext_filter not in ("*.*", "*"):
+                if not ext_filter.startswith("."):
+                    ext_filter = f".{ext_filter}"
+                entries = [f for f in entries if f.suffix.lower() == ext_filter]
+
+            self.renamer_staged_files = sorted(entries, key=lambda f: f.name.lower())
+            self._generate_renamer_preview()
+        except Exception as exc:
+            messagebox.showerror("Scan Error", str(exc))
+
+    def _generate_renamer_preview(self):
+        if not self.renamer_staged_files:
+            return
+
+        prefix = self.prefix_entry.get()
+        suffix = self.suffix_entry.get()
+        find_val = self.find_entry.get()
+        replace_val = self.replace_entry.get()
+        use_regex = bool(self.opt_use_regex.get())
+        add_numbering = bool(self.opt_add_numbering.get())
+        case_opt = self.case_menu.get()
+
+        try:
+            pad = int(self.numbering_padding_entry.get().strip())
+        except ValueError:
+            pad = 2
+
+        self.renamer_plan.clear()
+        lines = [
+            "========================================================================================================",
+            f" SURA Bulk Renamer Preview — Staged Files: {len(self.renamer_staged_files)}",
+            "========================================================================================================",
+            f"{'ORIGINAL FILE NAME':<45} -> {'NEW FILE NAME'}",
+            "-" * 100
+        ]
+
+        count = 1
+        changed_count = 0
+        for file_path in self.renamer_staged_files:
+            stem = file_path.stem
+            ext = file_path.suffix
+
+            # 1. Find & Replace
+            if find_val:
+                try:
+                    if use_regex:
+                        stem = re.sub(find_val, replace_val, stem)
+                    else:
+                        stem = stem.replace(find_val, replace_val)
+                except Exception:
+                    pass
+
+            # 2. Case transformation
+            if case_opt == "lowercase":
+                stem = stem.lower()
+            elif case_opt == "UPPERCASE":
+                stem = stem.upper()
+            elif case_opt == "Title Case":
+                stem = stem.title()
+
+            # 3. Numbering
+            num_str = f"_{str(count).zfill(pad)}" if add_numbering else ""
+
+            # 4. Prefix & Suffix
+            new_name = f"{prefix}{stem}{suffix}{num_str}{ext}"
+            self.renamer_plan.append((file_path, new_name))
+
+            if new_name != file_path.name:
+                changed_count += 1
+                lines.append(f"{file_path.name:<45} -> {new_name}")
+            else:
+                lines.append(f"{file_path.name:<45} -> [Unchanged]")
+
+            count += 1
+
+        lines.append("-" * 100)
+        lines.append(f"Summary: {changed_count} files will be renamed, {len(self.renamer_staged_files) - changed_count} files unchanged.\n")
+
+        self.renamer_table_box.delete("1.0", "end")
+        self.renamer_table_box.insert("1.0", "\n".join(lines))
+
+    def _execute_batch_rename(self):
+        if not self.renamer_plan:
+            messagebox.showwarning("No Plan", "Please scan a directory and check the preview first.")
+            return
+
+        changed_items = [(old, new) for old, new in self.renamer_plan if old.name != new]
+        if not changed_items:
+            messagebox.showinfo("Nothing to Rename", "All files in the current preview are already named accordingly.")
+            return
+
+        confirm = messagebox.askyesno(
+            "Confirm Batch Rename",
+            f"Are you sure you want to rename {len(changed_items)} files?\nThis operation will modify file names on disk."
+        )
+        if not confirm:
+            return
+
+        renamed_count = 0
+        errors = []
+
+        for old_path, new_name in changed_items:
+            new_path = old_path.parent / new_name
+            if new_path.exists() and new_path != old_path:
+                errors.append(f"Skipped '{old_path.name}': Target '{new_name}' already exists.")
+                continue
+
+            try:
+                old_path.rename(new_path)
+                renamed_count += 1
+            except Exception as exc:
+                errors.append(f"Failed '{old_path.name}': {exc}")
+
+        # Rescan to refresh UI state
+        self._scan_renamer_files()
+
+        msg = f"Successfully renamed {renamed_count} files!"
+        if errors:
+            msg += f"\n\nWarnings/Errors ({len(errors)}):\n" + "\n".join(errors[:5])
+        messagebox.showinfo("Batch Rename Complete", msg)
+
+    # =====================================================
+    # TAB 3: BYOK Settings UI
     # =====================================================
     def _build_settings_tab(self):
         self.settings_frame.grid_columnconfigure(0, weight=1)
@@ -809,7 +1135,6 @@ class SuraDesktopApp(ctk.CTk):
             handler = AIHandler(api_key=key, provider=provider, model=chosen_model)
             is_valid = handler.validate_api_key()
             effective_model = handler.model
-            # Resolved Tkinter lambda scope bug using default argument captures
             self.after(0, lambda iv=is_valid, p=provider, em=effective_model: self._on_validation_result(iv, p, em))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -829,7 +1154,7 @@ class SuraDesktopApp(ctk.CTk):
         self._update_ai_tab_badge()
 
     # =====================================================
-    # TAB 3: AI Assistant UI
+    # TAB 4: AI Assistant UI
     # =====================================================
     def _build_ai_tab(self):
         self.ai_frame.grid_columnconfigure(0, weight=1)
@@ -1049,7 +1374,6 @@ class SuraDesktopApp(ctk.CTk):
                 effective_model = handler.model
                 if effective_model != active_model:
                     self.config_manager.set_model(provider, effective_model)
-                # Resolved Tkinter lambda scope bug using default argument captures
                 self.after(0, lambda rt=result, em=effective_model: self._on_ai_task_complete(rt, em))
             except Exception as exc:
                 err_msg = str(exc)
