@@ -2,6 +2,10 @@
 
 > A modern, lightweight, privacy-first desktop application designed for automated file organization and ultra-fast developer AI tasks with zero telemetry.
 
+<p align="center">
+  <img src="docs/assets/preview.png" alt="SURA Desktop Interface Preview" width="100%">
+</p>
+
 ---
 
 ## 🚀 Key Features
